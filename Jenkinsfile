@@ -5,7 +5,6 @@ pipeline {
         AWS_REGION = 'ap-south-1'
         ECR_REPO = '700918784883.dkr.ecr.ap-south-1.amazonaws.com/bookmyshow'
         ANSIBLE_HOST = '172.31.14.157'
-        EKS_CLUSTER = 'bookmyshow-cluster'
     }
 
     stages {
@@ -20,10 +19,9 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 sh '''
-                docker build \
-                  -t bookmyshow:latest \
-                  -f bookmyshow-app/Dockerfile \
-                  bookmyshow-app
+                    docker build -t bookmyshow:latest \
+                    -f bookmyshow-app/Dockerfile \
+                    bookmyshow-app
                 '''
             }
         }
@@ -35,8 +33,7 @@ pipeline {
                     credentialsId: 'aws-creds'
                 ]]) {
                     sh '''
-                    aws ecr get-login-password --region $AWS_REGION | \
-                    docker login --username AWS --password-stdin 700918784883.dkr.ecr.ap-south-1.amazonaws.com
+                        aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin 700918784883.dkr.ecr.ap-south-1.amazonaws.com
                     '''
                 }
             }
@@ -45,43 +42,48 @@ pipeline {
         stage('Push Image to ECR') {
             steps {
                 sh '''
-                docker tag bookmyshow:latest $ECR_REPO:latest
-                docker push $ECR_REPO:latest
+                    docker tag bookmyshow:latest $ECR_REPO:latest
+                    docker push $ECR_REPO:latest
                 '''
             }
         }
 
         stage('Deploy using Ansible') {
             steps {
-                sh '''
-                ssh -o StrictHostKeyChecking=no ec2-user@$ANSIBLE_HOST <<EOF
-                cd ~/Book-My-Show
-                aws eks update-kubeconfig --region $AWS_REGION --name $EKS_CLUSTER
-                ansible-playbook deploy.yml
-                EOF
-                '''
+                sh """
+ssh -o StrictHostKeyChecking=no ec2-user@$ANSIBLE_HOST '
+cd ~/Book-My-Show
+aws eks update-kubeconfig --region ap-south-1 --name bookmyshow-cluster
+ansible-playbook deploy.yml
+'
+"""
             }
         }
 
         stage('Verify Deployment') {
             steps {
-                sh '''
-                ssh -o StrictHostKeyChecking=no ec2-user@$ANSIBLE_HOST <<EOF
-                kubectl get pods
-                kubectl get svc
-                EOF
-                '''
+                sh """
+ssh -o StrictHostKeyChecking=no ec2-user@$ANSIBLE_HOST '
+kubectl get pods
+kubectl get svc
+'
+"""
             }
         }
     }
 
     post {
+
         success {
-            echo 'Deployment Successful!'
+            echo 'Pipeline Executed Successfully!'
         }
 
         failure {
             echo 'Deployment Failed!'
+        }
+
+        always {
+            cleanWs()
         }
     }
 }
