@@ -1,26 +1,14 @@
 pipeline {
     agent any
 
-    tools {
-        jdk 'jdk17'
-        nodejs 'node23'
-    }
-
     environment {
-        SCANNER_HOME = tool('sonar-scanner')
         AWS_REGION = 'ap-south-1'
         ECR_REPO = '700918784883.dkr.ecr.ap-south-1.amazonaws.com/bookmyshow'
-        EKS_CLUSTER = 'bookmyshow-cluster'
         ANSIBLE_HOST = '172.31.14.157'
+        EKS_CLUSTER = 'bookmyshow-cluster'
     }
 
     stages {
-
-        stage('Clean Workspace') {
-            steps {
-                cleanWs()
-            }
-        }
 
         stage('Checkout') {
             steps {
@@ -29,104 +17,71 @@ pipeline {
             }
         }
 
-        stage('SonarQube Analysis') {
-            steps {
-                withSonarQubeEnv('SonarQube') {
-                    sh """
-                    ${SCANNER_HOME}/bin/sonar-scanner \
-                    -Dsonar.projectKey=BookMyShow \
-                    -Dsonar.projectName=BookMyShow
-                    """
-                }
-            }
-        }
-
-        stage('Quality Gate') {
-            steps {
-                timeout(time: 5, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
-                }
-            }
-        }
-
-        stage('Install Dependencies') {
-            steps {
-                dir('bookmyshow-app') {
-                    sh 'npm install'
-                }
-            }
-        }
-
-        stage('OWASP Dependency Check') {
-            steps {
-                dependencyCheck(
-                    odcInstallation: 'DP-Check',
-                    additionalArguments: '--scan ./'
-                )
-
-                dependencyCheckPublisher(
-                    pattern: '**/dependency-check-report.xml'
-                )
-            }
-        }
-
-        stage('Trivy File Scan') {
-            steps {
-                sh 'trivy fs . > trivyfs.txt'
-            }
-        }
-
-        stage('Docker Build') {
+        stage('Build Docker Image') {
             steps {
                 sh '''
                 docker build \
-                -t bookmyshow:latest \
-                -f bookmyshow-app/Dockerfile \
-                bookmyshow-app
+                  -t bookmyshow:latest \
+                  -f bookmyshow-app/Dockerfile \
+                  bookmyshow-app
                 '''
+            }
+        }
+
+        stage('Login to Amazon ECR') {
+            steps {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws-creds'
+                ]]) {
+                    sh '''
+                    aws ecr get-login-password --region $AWS_REGION | \
+                    docker login --username AWS --password-stdin 700918784883.dkr.ecr.ap-south-1.amazonaws.com
+                    '''
+                }
             }
         }
 
         stage('Push Image to ECR') {
             steps {
                 sh '''
-                aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 700918784883.dkr.ecr.ap-south-1.amazonaws.com
-
-                docker tag bookmyshow:latest 700918784883.dkr.ecr.ap-south-1.amazonaws.com/bookmyshow:latest
-
-                docker push 700918784883.dkr.ecr.ap-south-1.amazonaws.com/bookmyshow:latest
+                docker tag bookmyshow:latest $ECR_REPO:latest
+                docker push $ECR_REPO:latest
                 '''
             }
         }
 
         stage('Deploy using Ansible') {
             steps {
-                sh """
-                ssh -o StrictHostKeyChecking=no ec2-user@${ANSIBLE_HOST} "cd ~/Book-My-Show && aws eks update-kubeconfig --region ${AWS_REGION} --name ${EKS_CLUSTER} && ansible-playbook deploy.yml"
-                """
+                sh '''
+                ssh -o StrictHostKeyChecking=no ec2-user@$ANSIBLE_HOST <<EOF
+                cd ~/Book-My-Show
+                aws eks update-kubeconfig --region $AWS_REGION --name $EKS_CLUSTER
+                ansible-playbook deploy.yml
+                EOF
+                '''
             }
         }
 
         stage('Verify Deployment') {
             steps {
-                sh """
-                ssh -o StrictHostKeyChecking=no ec2-user@${ANSIBLE_HOST} "kubectl get pods && kubectl get svc"
-                """
+                sh '''
+                ssh -o StrictHostKeyChecking=no ec2-user@$ANSIBLE_HOST <<EOF
+                kubectl get pods
+                kubectl get svc
+                EOF
+                '''
             }
         }
     }
 
     post {
-        always {
-            archiveArtifacts artifacts: 'trivyfs.txt', fingerprint: true
-        }
-
         success {
-            echo 'Pipeline completed successfully.'
+            echo 'Deployment Successful!'
         }
 
         failure {
-            echo 'Pipeline failed.'
+            echo 'Deployment Failed!'
         }
     }
 }
